@@ -1,0 +1,97 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import scipy.io
+import matplotlib.pyplot as plt
+
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, num_layers, sequence_length):
+        super().__init__()
+        self.sequence_length = sequence_length
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+        
+    def forward(self, x):
+        _, (h_n, _) = self.lstm(x)
+        out = self.fc(h_n[-1])
+        return out
+
+data = scipy.io.loadmat('/content/simulation1_data.mat')
+gripper_pos = data['gripperPosition_history']
+
+# Define the co-ord position (Range: 0 - 2)
+coord = gripper_pos[:, 1, :]                 #<-- Change gripper_pos[:, 0, :] (or) Change gripper_pos[:, 1, :] (or) Change gripper_pos[:, 2, :]
+
+for i in range(gripper_pos.shape[2]):
+    plt.plot(coord[:, i])
+
+plt.xlabel('Time step')
+plt.ylabel(f'Gripper position (coordinate)')
+plt.show()
+
+sequence_length = 3
+train_data = coord[:1000, :]
+test_data = coord[1000:, :]
+
+def prepare_data(data):
+    X, y = [], []
+    for i in range(sequence_length, len(data)):
+        X.append(data[i-sequence_length:i, :])
+        y.append(data[i, :])
+    return np.array(X), np.array(y)
+
+X_train, y_train = prepare_data(train_data)
+X_test, y_test = prepare_data(test_data)
+
+# Convert the data to PyTorch tensors
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_train = torch.tensor(y_train, dtype=torch.float32)
+X_test = torch.tensor(X_test, dtype=torch.float32)
+y_test = torch.tensor(y_test, dtype=torch.float32)
+
+# Defining hyperparameters
+input_size = gripper_pos.shape[2] 
+hidden_size = 32
+output_size = 1
+num_layers = 2
+batch_size = 32
+num_epochs = 10
+learning_rate = 0.001
+
+model = LSTM(input_size, hidden_size, output_size, num_layers, sequence_length)
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+train_losses = []
+test_losses = []
+predictions = []
+ground_truths = []
+
+for epoch in range(num_epochs):
+    for i in range(0, len(X_train), batch_size):
+        x_batch = X_train[i:i+batch_size]
+        y_batch = y_train[i:i+batch_size]
+        y_pred = model(x_batch)
+        loss = criterion(y_pred[:, 0], y_batch[:, 0])
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        train_losses.append(loss.item())
+        predictions.append(y_pred.detach().numpy())
+        ground_truths.append(y_batch.detach().numpy())
+
+    with torch.no_grad():
+        test_loss = 0
+        for i in range(0, len(X_test), batch_size):
+            x_batch = X_test[i:i+batch_size]
+            y_batch = y_batch.unsqueeze(1) 
+            y_pred = model(x_batch)
+            loss = criterion(y_pred, y_batch)
+
+            test_loss += loss.item()
+            predictions.append(y_pred.detach().numpy())
+            ground_truths.append(y_batch.detach().numpy())
+
+        test_losses.append(test_loss)  
+
+    print(f"Epoch {epoch+1}, train loss: {train_losses[-1]:.4f}, test loss: {test_losses[-1]:.4f}")
