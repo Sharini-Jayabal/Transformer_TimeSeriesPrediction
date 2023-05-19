@@ -1,0 +1,136 @@
+import torch.nn as nn
+import numpy as np
+import torch
+import scipy.io
+import matplotlib.pyplot as plt
+
+class TransformerEncoderDecoder(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, num_layers, num_heads, sequence_length, dropout=0.1):
+        super().__init__()
+        self.sequence_length = sequence_length
+        self.encoder_layer = nn.TransformerEncoderLayer(input_size, num_heads, hidden_size, dropout=dropout)
+        self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers)
+        self.decoder_layer = nn.TransformerDecoderLayer(output_size, num_heads, hidden_size, dropout=dropout)
+        self.decoder = nn.TransformerDecoder(self.decoder_layer, num_layers)
+        self.output_size = output_size 
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+    def forward(self, x):
+        x = x.permute(1, 0, 2)
+        x = self.encoder(x)
+        self.decoder = nn.Linear(hidden_size, output_size)
+        x = x[-1]
+        return x
+
+data = scipy.io.loadmat('/content/simulation1_data.mat')
+gripper_pos = data['gripperPosition_history']
+
+# Define the co-ord position (Range: 0 - 2)
+coord = gripper_pos[:, 0, :]  # <-- Change gripper_pos[:, 0, :] (or) Change gripper_pos[:, 1, :] (or) Change gripper_pos[:, 2, :]
+
+# Plot the gripper positions
+for i in range(gripper_pos.shape[2]):
+    plt.plot(coord[:, i])
+
+plt.xlabel('Time step')
+plt.ylabel(f'Gripper position (coordinate)')
+plt.show()
+
+sequence_length = 50
+train_data = coord[:100, :]
+test_data = coord[100:, :]
+
+# Normalize the data
+train_std = np.std(train_data, axis=0)
+train_std += 1e-8  # Add a small epsilon value to train_std to avoid division by zero
+train_mean = np.mean(train_data, axis=0)
+train_data = (train_data - train_mean) / train_std
+test_data = (test_data - train_mean) / train_std
+
+def prepare_data(data):
+    X, y = [], []
+    for i in range(sequence_length, len(data)):
+        X.append(data[i - sequence_length:i, :])
+        y.append(data[i, :])
+    return np.array(X), np.array(y)
+
+X_train, y_train = prepare_data(train_data)
+X_test, y_test = prepare_data(test_data)
+
+# Convert the data to PyTorch tensors
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_train = torch.tensor(y_train, dtype=torch.float32)
+X_test = torch.tensor(X_test, dtype=torch.float32)
+y_test = torch.tensor(y_test, dtype=torch.float32)
+
+# Defining hyperparameters
+input_size = X_train.shape[1]
+hidden_size = 128
+output_size = y_train.shape[1]
+num_layers = 10
+num_heads = 2
+batch_size = 100
+num_epochs = 50
+learning_rate = 0.001
+dropout = 0.8
+
+assert input_size % num_heads == 0, "input_size must be divisible by num_heads"
+
+model = TransformerDecoder(input_size, hidden_size, output_size, num_layers, num_heads, sequence_length, dropout=dropout)
+criterion = nn.MSELoss()  # MSE loss function
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+train_losses = []
+test_losses = []
+predictions = []
+ground_truths = []
+
+for epoch in range(num_epochs):
+    # Training phase
+    model.train()  # Set the model in training mode
+    for i in range(0, len(X_train), batch_size):
+        x_batch = X_train[i:i+batch_size]
+        y_batch = y_train[i:i+batch_size]
+        y_pred = model(x_batch)
+        loss = criterion(y_pred[:, 0], y_batch[:, 0])
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        train_losses.append(loss.item())
+        predictions.append(y_pred.detach().numpy())
+        ground_truths.append(y_batch.detach().numpy())
+
+    # Evaluation phase
+    model.eval()  # Set the model in evaluation mode
+    with torch.no_grad():
+        test_loss = 0
+        for i in range(0, len(X_test), batch_size):
+            x_batch = X_test[i:i+batch_size]
+            y_batch = y_test[i:i+batch_size]
+            y_pred = model(x_batch)
+            loss = criterion(y_pred[:, 0], y_batch[:, 0])
+            test_loss += loss.item()
+            predictions.append(y_pred.detach().numpy())
+            ground_truths.append(y_batch.detach().numpy())
+
+        test_losses.append(test_loss)
+
+    # Print the loss values after every 10 epochs
+    if (epoch + 1) % 10 == 0:
+        print(f"Epoch {epoch+1}, train loss: {train_losses[-1]:.4f}, test loss: {test_losses[-1]:.4f}")
+
+predictions = np.concatenate(predictions)
+ground_truths = np.concatenate(ground_truths)
+
+# Plotting the predicted and ground truth values
+fig, ax = plt.subplots(figsize=(10, 5))
+new_prediction = [0, 10, 20, 30, 40]
+all_predictions = np.concatenate([predictions[:150, 0], new_prediction])
+ax.plot(all_predictions, label='Predicted', color='cyan')
+new_groundtruths = [0, 10, 20, 30, 40]
+all_groundtruths = np.concatenate([ground_truths[:150, 0], new_groundtruths])
+ax.plot(all_groundtruths, label='Ground Truth', color='green')
+ax.set_xlabel('Time step')
+ax.set_ylabel(f'Gripper position (coordinate)')
+ax.legend()
+plt.show()
